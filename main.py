@@ -1,7 +1,10 @@
+# main.py
 from fastapi import FastAPI, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import openai
-import fitz  # PyMuPDF pour lire le PDF
+import fitz  # pip install pymupdf
+import json
+import os
 
 app = FastAPI()
 
@@ -13,34 +16,61 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-openai.api_key = "TON_API_KEY_OPENAI"
+# get API key from env var
+OPENAI_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_KEY:
+    raise RuntimeError("Set OPENAI_API_KEY environment variable")
+openai.api_key = OPENAI_KEY
 
-def extract_text_from_pdf(pdf_file):
-    doc = fitz.open(stream=pdf_file, filetype="pdf")
-    text = ""
+def extract_text_from_pdf(pdf_bytes: bytes) -> str:
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    texts = []
     for page in doc:
-        text += page.get_text()
-    return text
+        texts.append(page.get_text())
+    return "\n".join(texts)
 
 @app.post("/generate")
 async def generate_questions(file: UploadFile = File(...)):
-    pdf_content = await file.read()
-    text = extract_text_from_pdf(pdf_content)
+    pdf_bytes = await file.read()
+    text = extract_text_from_pdf(pdf_bytes)
 
+    # Prompt: ask model to return pure JSON
     prompt = f"""
-    Generate 5 multiple choice questions based on the course below.
-    Format:
-    [
-      {{"question":"...", "choices":["A","B","C","D"], "answer":"A"}}
-    ]
+Generate exactly 5 multiple-choice questions (MCQ) based on the course text below.
+Return only valid JSON (no extra commentary). Format:
 
-    Course content:
-    {text}
-    """
+{{"questions":[
+  {{"question":"...","choices":["A","B","C","D"],"answer_index":0}},
+  ...
+]}}
 
-    response = openai.ChatCompletion.create(
-        model="gpt-4.1-mini",
-        messages=[{"role": "user", "content": prompt}]
+Course text:
+{text}
+"""
+
+    # call OpenAI
+    resp = openai.ChatCompletion.create(
+        model="gpt-4o-mini",          # or another available model
+        messages=[{"role":"user","content":prompt}],
+        max_tokens=1000,
+        temperature=0.2
     )
 
-    return response.choices[0].message["content"]
+    raw = resp.choices[0].message["content"].strip()
+
+    # try to parse JSON, otherwise try to extract substring that is JSON
+    try:
+        data = json.loads(raw)
+    except Exception:
+        # attempt to find first { and last } and parse
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1:
+            try:
+                data = json.loads(raw[start:end+1])
+            except Exception:
+                data = {"error": "Could not parse model output as JSON", "raw": raw}
+        else:
+            data = {"error": "No JSON found in model output", "raw": raw}
+
+    return data
