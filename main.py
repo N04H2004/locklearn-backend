@@ -1,76 +1,59 @@
-# main.py
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-import openai
-import fitz  # pip install pymupdf
-import json
+import uvicorn
 import os
+from openai import OpenAI
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()
 
+# Autorise les requêtes depuis ton frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# get API key from env var
-OPENAI_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_KEY:
-    raise RuntimeError("Set OPENAI_API_KEY environment variable")
-openai.api_key = OPENAI_KEY
+# 👉 Serve le fichier static/index.html sur route /
+@app.get("/")
+def serve_frontend():
+    return FileResponse("static/index.html")
 
-def extract_text_from_pdf(pdf_bytes: bytes) -> str:
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    texts = []
-    for page in doc:
-        texts.append(page.get_text())
-    return "\n".join(texts)
 
-@app.post("/generate")
-async def generate_questions(file: UploadFile = File(...)):
-    pdf_bytes = await file.read()
-    text = extract_text_from_pdf(pdf_bytes)
+# 👉 Endpoint pour upload fichier et générer questions
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    content = (await file.read()).decode("utf-8")
 
-    # Prompt: ask model to return pure JSON
     prompt = f"""
-Generate exactly 5 multiple-choice questions (MCQ) based on the course text below.
-Return only valid JSON (no extra commentary). Format:
+    Génère 5 questions d'examen sur le contenu suivant en français.
+    Format en JSON :
+    {{
+      "questions": [
+        "question 1",
+        "question 2",
+        "question 3",
+        "question 4",
+        "question 5"
+      ]
+    }}
 
-{{"questions":[
-  {{"question":"...","choices":["A","B","C","D"],"answer_index":0}},
-  ...
-]}}
+    --- CONTENU DU DOCUMENT ---
+    {content}
+    """
 
-Course text:
-{text}
-"""
-
-    # call OpenAI
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o-mini",          # or another available model
-        messages=[{"role":"user","content":prompt}],
-        max_tokens=1000,
-        temperature=0.2
+    response = client.chat.completions.create(
+        model="gpt-5",  # tu peux mettre gpt-4 si besoin
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3
     )
 
-    raw = resp.choices[0].message["content"].strip()
+    return {"questions": response.choices[0].message["content"]}
 
-    # try to parse JSON, otherwise try to extract substring that is JSON
-    try:
-        data = json.loads(raw)
-    except Exception:
-        # attempt to find first { and last } and parse
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1:
-            try:
-                data = json.loads(raw[start:end+1])
-            except Exception:
-                data = {"error": "Could not parse model output as JSON", "raw": raw}
-        else:
-            data = {"error": "No JSON found in model output", "raw": raw}
 
-    return data
+# Mode local (sur Render ils ignorent cette partie, c’est OK)
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
