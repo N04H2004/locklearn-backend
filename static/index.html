@@ -4,23 +4,69 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Upload PDF → Questions</title>
+  <style>
+    body{font-family:system-ui,Arial;max-width:900px;margin:30px auto;padding:10px}
+    #out{background:#f7f7f7;padding:12px;border-radius:6px;min-height:80px}
+    .small{font-size:0.9rem;color:#555}
+  </style>
 </head>
 <body>
-  <h1>Upload PDF</h1>
-  <input id="file" type="file" />
+  <h1>Prototype — upload PDF → 5 questions</h1>
+  <p class="small">Choisis un fichier PDF (ou .txt). Taille recommandée &lt; 10 Mo.</p>
+
+  <input id="file" type="file" accept=".pdf,.txt" />
   <button id="send">Envoyer</button>
-  <pre id="out"></pre>
+  <p id="status"></p>
+  <pre id="out" style="white-space:pre-wrap;"></pre>
 
 <script>
-document.getElementById("send").onclick = async () => {
-  const f = document.getElementById("file").files[0];
-  const fd = new FormData();
-  fd.append("file", f);
+const apiBase = ""; // si front+back sur même domaine, laisse "", sinon "https://locklearn-backend.onrender.com"
 
-  const r = await fetch("/upload", { method: "POST", body: fd });
-  const j = await r.json();
-  document.getElementById("out").textContent = JSON.stringify(j, null, 2);
-};
+function logStatus(s){ document.getElementById('status').textContent = s; }
+function logOut(t){ document.getElementById('out').textContent = t; }
+
+document.getElementById('send').addEventListener('click', async () => {
+  const f = document.getElementById('file').files[0];
+  if(!f){ alert("Choisis un fichier"); return; }
+
+  const fd = new FormData();
+  fd.append('file', f);
+
+  logStatus("Envoi en cours... (10-40s)");
+  logOut("");
+
+  try {
+    const res = await fetch(apiBase + "/upload", { method: "POST", body: fd });
+    const text = await res.text(); // read raw text (no json() crash)
+    if(!res.ok){
+      logStatus("Erreur serveur " + res.status);
+      logOut(text);
+      console.error("Erreur serveur", res.status, text);
+      return;
+    }
+
+    // try parse JSON safely
+    try {
+      const j = JSON.parse(text);
+      logStatus("Réussi !");
+      if(j.questions && Array.isArray(j.questions)) {
+        logOut(j.questions.map((q,i)=> (i+1)+". "+q).join("\n\n"));
+      } else if (j.questions_text) {
+        logOut(j.questions_text);
+      } else {
+        logOut(JSON.stringify(j, null, 2));
+      }
+    } catch(e) {
+      // server returned plain text (not JSON) — show it
+      logStatus("Réussi (réponse non-JSON)");
+      logOut(text);
+    }
+  } catch(err){
+    logStatus("Erreur réseau");
+    logOut(String(err));
+    console.error(err);
+  }
+});
 </script>
 </body>
 </html>
